@@ -1,0 +1,217 @@
+# This app demonstrates enables an LLM to answer questions about your private documents
+# by providing the document content as additional context in your prompts.
+# Complete the code to enable document-based question answering.
+
+# Instructions:
+
+# 1. Read through the guide
+# 2. Find the TWO BEGIN SOLUTION / END SOLUTION blocks below and complete them
+# 3. Run 'streamlit run app.py' in the terminal
+# 4. Test your chatbot in the browser
+
+
+import streamlit as st
+from openai import OpenAI
+import PyPDF2
+
+
+# Initialize OpenAI client
+client = OpenAI()
+
+# ============================================
+# PAGE CONFIGURATION
+# ============================================
+
+st.set_page_config(
+    page_title="eCornell Document Chat",
+    page_icon="📄",
+    layout="wide"
+)
+
+# ============================================
+# CORNELL HEADER
+# ============================================
+
+col1, col2 = st.columns([1, 4])
+with col1:
+    st.image(
+        "cornell_seal.png",
+        width=100,
+    )
+with col2:
+    st.markdown(
+        "<h3 style='color: #b31b1b; margin-bottom: 0;'>📄 Chat with Your Document</h3>",
+        unsafe_allow_html=True,
+    )
+    st.caption("Powered by eCornell")
+
+st.markdown("---")
+
+# ============================================
+# FILE UPLOAD 
+# ============================================
+
+# BEGIN SOLUTION
+uploaded_file = st.file_uploader("Upload a document", type=["txt", "pdf"])  
+# END SOLUTION
+
+# ============================================
+# CHAT INPUT
+# ============================================
+
+# The chat input is disabled until a file is uploaded, which makes sense because
+# we can't answer questions about a document that hasn't been provided yet!
+question = st.chat_input(
+    "Ask a question about your document...",
+    disabled=not uploaded_file,
+)
+
+# ============================================
+# INITIALIZE SESSION STATE
+# ============================================
+
+# We initialize the conversation with a helpful greeting that guides the user
+# on what to do first (upload a document), rather than leaving them guessing
+if "messages" not in st.session_state:
+    st.session_state.messages = [
+        {"role": "assistant", "content": "Hello! Upload a .txt or .pdf document above (scroll up if necessary) and I'll help you understand it by answering your questions."}
+    ]
+
+# ============================================
+# DISPLAY CONVERSATION HISTORY
+# ============================================
+
+for msg in st.session_state.messages:
+    st.chat_message(msg["role"]).write(msg["content"])
+
+# ============================================
+# HANDLE USER QUESTION (WITH DOCUMENT CONTEXT)
+# ============================================
+
+if question and uploaded_file:
+    # First, add the user's question to our conversation history and display it
+    st.session_state.messages.append({"role": "user", "content": question})
+    st.chat_message("user").write(question)
+
+    # Now we need to extract the text content from the uploaded file
+    # We'll handle different file types differently
+    file_content = ""
+
+    # ============================================
+    # FILE READING 
+    # ============================================
+
+    # PDFs are binary files that require special handling to extract text
+    # We use the PyPDF2 library to read PDFs page by page
+    if uploaded_file.name.endswith(".pdf"):
+        try:
+            # Create a PDF reader object that can parse the uploaded PDF file
+            pdf_reader = PyPDF2.PdfReader(uploaded_file)
+
+            # Loop through each page in the PDF and extract its text content
+            # PDFs store text separately from formatting, so we can extract just the text
+            for page in pdf_reader.pages:
+                page_text = page.extract_text()
+                if page_text:  # Only add text if the page actually contains text
+                    file_content += page_text + "\n"
+
+            # Some PDFs (like scanned documents) are just images and don't contain extractable text
+            # If we couldn't extract any text, we need to let the user know
+            if not file_content:
+                st.error("Could not extract text from this PDF. It might be a scanned image or corrupted.")
+                st.stop()
+        except Exception as e:
+            st.error(f"Error reading PDF file: {e}")
+            st.stop()
+
+    # Text files (.txt) are much simpler - they're just plain text!
+    # We can read them directly by decoding the bytes to a string
+    else:
+        try:
+            file_content = uploaded_file.read().decode("utf-8")
+        except Exception as e:
+            st.error(f"Error reading text file: {e}")
+            st.stop()
+
+    # ============================================
+    # GENERATE AI RESPONSE 
+    # ============================================
+
+    with st.chat_message("assistant"):
+        # Here's the key insight: LLMs don't have access to your private documents,
+        # so we need to explicitly provide the document content as part of our prompt.
+        # We do this by creating a system message that includes the entire document.
+
+        # Start building the messages we'll send to the API
+        # The first message should be a system message that contains your document
+        api_messages = [
+            # BEGIN SOLUTION
+            {"role": "system", 
+            "content": f"You are a helpful assistant. Answer the user's question based on the following document content:\n\n{file_content}"}  
+            # END SOLUTION
+        ]
+
+        # Add the conversation history (previous questions and answers) so the AI
+        # can maintain context across multiple questions about the same document
+        history = [msg for msg in st.session_state.messages if msg['role'] != 'system']
+        api_messages.extend(history)
+
+        # Now generate the AI's response using streaming so the user sees it appear in real-time
+        try:
+            stream = client.chat.completions.create(
+                model="gpt-4o",
+                messages=api_messages,
+                stream=True
+            )
+            response = st.write_stream(stream)
+
+            # Save the assistant's response to our conversation history
+            # so future questions can reference previous answers
+            st.session_state.messages.append({"role": "assistant", "content": response})
+        except Exception as e:
+            st.error(f"Error communicating with OpenAI API: {e}")
+
+# ============================================
+# SIDEBAR: DOCUMENT INFO (HELPFUL FEEDBACK)
+# ============================================
+
+with st.sidebar:
+    st.header("📄 Document Information")
+
+    if uploaded_file:
+        st.markdown(f"**Filename:** {uploaded_file.name}")
+        st.markdown(f"**File size:** {uploaded_file.size:,} bytes")
+
+        # Show how many pages for PDFs (helpful context for users)
+        if uploaded_file.name.endswith(".pdf"):
+            try:
+                pdf_reader = PyPDF2.PdfReader(uploaded_file)
+                st.markdown(f"**Pages:** {len(pdf_reader.pages)}")
+            except:
+                pass
+
+        st.success("✅ Document loaded! Ask questions below.")
+    else:
+        st.info("No document uploaded yet. Upload a file above to get started!")
+
+    # Reset conversation button to clear the chat history
+    st.markdown("---")
+    if st.button("🔄 Reset Conversation"):
+        st.session_state.messages = [
+            {"role": "assistant", "content": "Hello! Upload a document above (txt or pdf) and I'll help you understand it by answering your questions."}
+        ]
+        st.rerun()
+
+# ============================================
+# FOOTER
+# ============================================
+
+st.markdown("---")
+
+st.markdown(
+    "<div style='text-align: center; color: gray;'>"
+    "© eCornell<br>"
+    "For assistance, contact course staff"
+    "</div>",
+    unsafe_allow_html=True,
+)
